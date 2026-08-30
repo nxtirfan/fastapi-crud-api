@@ -29,6 +29,11 @@ class TaskCreate(BaseModel):
     done: bool = False
 
 
+class TaskUpdate(BaseModel):
+    title: str | None = None
+    done: bool | None = None
+
+
 @app.get("/")
 def read_root():
     """Describe this API: its name, version, and the endpoints it offers."""
@@ -66,3 +71,30 @@ def create_task(payload: TaskCreate):
     tasks.append(task)
     next_id += 1
     return task
+
+
+@app.put("/tasks/{task_id}")
+def update_task(task_id: int, payload: TaskUpdate):
+    """Update a task's title and/or done. Empty body or unknown id returns 400/404."""
+    for index, task in enumerate(tasks):
+        if task["id"] == task_id:
+            if payload.title is None and payload.done is None:
+                raise HTTPException(status_code=400, detail="Request body must include 'title' and/or 'done'")
+            if payload.title is not None:
+                if not payload.title.strip():
+                    raise HTTPException(status_code=400, detail="Field 'title' must not be empty")
+                tasks[index]["title"] = payload.title.strip()
+            if payload.done is not None:
+                tasks[index]["done"] = payload.done
+            return tasks[index]
+    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+@app.delete("/tasks/{task_id}", status_code=204)
+def delete_task(task_id: int):
+    """Delete a task. Returns 204 with an empty body, or 404 if the id does not exist."""
+    for index, task in enumerate(tasks):
+        if task["id"] == task_id:
+            tasks.pop(index)
+            return
+    raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
