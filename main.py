@@ -11,7 +11,7 @@ app = FastAPI(
     description="A small CRUD API that manages a to-do list. "
     "Tasks are stored in a SQLite database (tasks.db), so data "
     "survives server restarts.",
-    version="2.0",
+    version="1.0",
 )
 
 
@@ -75,10 +75,6 @@ def init_db() -> None:
 
 
 init_db()
-
-
-tasks: list[dict] = [dict(task) for task in SEED_TASKS]
-next_id = 4
 
 
 class TaskCreate(BaseModel):
@@ -156,10 +152,15 @@ def read_stats():
 @app.post("/reset", tags=["Tasks"])
 def reset_tasks():
     """Restore the 3 seed tasks - handy for demos."""
-    global next_id
-    tasks[:] = [dict(task) for task in SEED_TASKS]
-    next_id = 4
-    return {"message": "Reset to seed tasks", "count": len(tasks)}
+    with closing(get_connection()) as connection:
+        with connection:
+            connection.execute("DELETE FROM tasks")
+            connection.executemany(
+                "INSERT INTO tasks (title, done) VALUES (?, ?)",
+                [(task["title"], int(task["done"])) for task in SEED_TASKS],
+            )
+        (count,) = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()
+    return {"message": "Reset to seed tasks", "count": count}
 
 
 @app.get("/tasks/{task_id}", tags=["Tasks"])
@@ -196,13 +197,21 @@ def update_task(task_id: int, payload: TaskUpdate):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     if payload.title is None and payload.done is None:
         raise HTTPException(status_code=400, detail="Request body must include 'title' and/or 'done'")
+    if payload.title is not None and not payload.title.strip():
+        raise HTTPException(status_code=400, detail="Field 'title' must not be empty")
+    sets = []
+    params: list = []
     if payload.title is not None:
-        if not payload.title.strip():
-            raise HTTPException(status_code=400, detail="Field 'title' must not be empty")
-        task["title"] = payload.title.strip()
+        sets.append("title = ?")
+        params.append(payload.title.strip())
     if payload.done is not None:
-        task["done"] = payload.done
-    return task
+        sets.append("done = ?")
+        params.append(int(payload.done))
+    params.append(task_id)
+    with closing(get_connection()) as connection:
+        with connection:
+            connection.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", params)
+    return find_task(task_id)
 
 
 @app.delete("/tasks/{task_id}", status_code=204, tags=["Tasks"])
@@ -211,4 +220,6 @@ def delete_task(task_id: int):
     task = find_task(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
-    tasks.remove(task)
+    with closing(get_connection()) as connection:
+        with connection:
+            connection.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
