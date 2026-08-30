@@ -173,14 +173,19 @@ def read_task(task_id: int):
 
 @app.post("/tasks", status_code=201, tags=["Tasks"])
 def create_task(payload: TaskCreate):
-    """Create a new task. The body must contain a non-empty title."""
-    global next_id
+    """Create a new task in the database. The body must contain a non-empty title."""
     if payload.title is None or not payload.title.strip():
         raise HTTPException(status_code=400, detail="Field 'title' is required and must not be empty")
-    task = {"id": next_id, "title": payload.title.strip(), "done": payload.done}
-    tasks.append(task)
-    next_id += 1
-    return task
+    with closing(get_connection()) as connection:
+        with connection:
+            cursor = connection.execute(
+                "INSERT INTO tasks (title, done) VALUES (?, ?)",
+                (payload.title.strip(), int(payload.done)),
+            )
+            row = connection.execute(
+                "SELECT * FROM tasks WHERE id = ?", (cursor.lastrowid,)
+            ).fetchone()
+        return row_to_task(row)
 
 
 @app.put("/tasks/{task_id}", tags=["Tasks"])
