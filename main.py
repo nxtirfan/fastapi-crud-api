@@ -1,5 +1,7 @@
 ﻿from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -9,12 +11,22 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
 
 
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=400, content={"error": "Invalid request body"})
+
+
 tasks = [
     {"id": 1, "title": "Learn Python basics", "done": False},
     {"id": 2, "title": "Build a CRUD API", "done": False},
     {"id": 3, "title": "Write API documentation", "done": True},
 ]
 next_id = 4
+
+
+class TaskCreate(BaseModel):
+    title: str | None = None
+    done: bool = False
 
 
 @app.get("/")
@@ -42,3 +54,15 @@ def read_task(task_id: int):
         if task["id"] == task_id:
             return task
     raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+@app.post("/tasks", status_code=201)
+def create_task(payload: TaskCreate):
+    """Create a new task. The body must contain a non-empty title."""
+    global next_id
+    if payload.title is None or not payload.title.strip():
+        raise HTTPException(status_code=400, detail="Field 'title' is required and must not be empty")
+    task = {"id": next_id, "title": payload.title.strip(), "done": payload.done}
+    tasks.append(task)
+    next_id += 1
+    return task
