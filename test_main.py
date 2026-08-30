@@ -1,19 +1,18 @@
+import pytest
 from fastapi.testclient import TestClient
 
+import main
 from main import app
 
 client = TestClient(app)
 
 
-def setup_function():
-    from main import tasks, next_id
-    tasks[:] = [dict(task) for task in [
-        {"id": 1, "title": "Learn Python basics", "done": False},
-        {"id": 2, "title": "Build a CRUD API", "done": False},
-        {"id": 3, "title": "Write API documentation", "done": True},
-    ]]
-    import main
-    main.next_id = 4
+@pytest.fixture(autouse=True)
+def fresh_db(tmp_path, monkeypatch):
+    """Give every test a fresh seeded database in a temporary directory."""
+    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "tasks.db"))
+    main.init_db()
+    yield
 
 
 def test_root_describes_api():
