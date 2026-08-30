@@ -45,6 +45,11 @@ def get_connection() -> sqlite3.Connection:
     return connection
 
 
+def row_to_task(row: sqlite3.Row) -> dict:
+    """Convert a database row into the task dict the API returns (done as bool)."""
+    return {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
+
+
 def init_db() -> None:
     """Create the tasks table if missing and seed 3 example tasks only when empty.
 
@@ -87,7 +92,12 @@ class TaskUpdate(BaseModel):
 
 
 def find_task(task_id: int) -> dict | None:
-    return next((task for task in tasks if task["id"] == task_id), None)
+    """Fetch one task from the database, or None if the id does not exist."""
+    with closing(get_connection()) as connection:
+        row = connection.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return row_to_task(row) if row is not None else None
 
 
 @app.get("/", tags=["General"])
@@ -109,24 +119,38 @@ def read_tasks(
     limit: int = Query(default=0, ge=0, description="Pagination: max number of tasks to return (0 = all)"),
     offset: int = Query(default=0, ge=0, description="Pagination: number of tasks to skip"),
 ):
-    """List tasks. Supports filtering by done status, title search, and pagination."""
-    result = tasks
+    """List tasks from the database. Supports filtering by done status, title search, and pagination."""
+    clauses = []
+    params: list = []
     if done is not None:
-        result = [task for task in result if task["done"] == done]
+        clauses.append("done = ?")
+        params.append(int(done))
     if search:
-        needle = search.lower()
-        result = [task for task in result if needle in task["title"].lower()]
-    result = result[offset:]
+        clauses.append("title LIKE ?")
+        params.append(f"%{search.lower()}%")
+    query = "SELECT * FROM tasks"
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+    query += " ORDER BY id"
     if limit > 0:
-        result = result[:limit]
-    return result
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    elif offset > 0:
+        query += " LIMIT -1 OFFSET ?"
+        params.append(offset)
+    with closing(get_connection()) as connection:
+        rows = connection.execute(query, params).fetchall()
+        return [row_to_task(row) for row in rows]
 
 
 @app.get("/stats", tags=["Stats"])
 def read_stats():
-    """Compute summary statistics over the current task list."""
-    done_count = sum(1 for task in tasks if task["done"])
-    return {"total": len(tasks), "done": done_count, "open": len(tasks) - done_count}
+    """Compute summary statistics over the tasks with SQL aggregates."""
+    with closing(get_connection()) as connection:
+        (total, done_count) = connection.execute(
+            "SELECT COUNT(*), COALESCE(SUM(done), 0) FROM tasks"
+        ).fetchone()
+    return {"total": total, "done": done_count, "open": total - done_count}
 
 
 @app.post("/reset", tags=["Tasks"])
