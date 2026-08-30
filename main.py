@@ -3,7 +3,13 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-app = FastAPI()
+app = FastAPI(
+    title="Task API",
+    description="A small CRUD API that manages a to-do list. "
+    "All data lives in memory only - the list is reset to the "
+    "3 seed tasks every time the server restarts.",
+    version="1.0",
+)
 
 
 @app.exception_handler(HTTPException)
@@ -34,25 +40,25 @@ class TaskUpdate(BaseModel):
     done: bool | None = None
 
 
-@app.get("/")
+@app.get("/", tags=["General"])
 def read_root():
     """Describe this API: its name, version, and the endpoints it offers."""
     return {"name": "Task API", "version": "1.0", "endpoints": ["/tasks"]}
 
 
-@app.get("/health")
+@app.get("/health", tags=["General"])
 def read_health():
     """Health check - returns ok as long as the server is alive."""
     return {"status": "ok"}
 
 
-@app.get("/tasks")
+@app.get("/tasks", tags=["Tasks"])
 def read_tasks():
     """List all tasks."""
     return tasks
 
 
-@app.get("/tasks/{task_id}")
+@app.get("/tasks/{task_id}", tags=["Tasks"])
 def read_task(task_id: int):
     """Return one task by its id. Returns 404 if the id does not exist."""
     for task in tasks:
@@ -61,7 +67,7 @@ def read_task(task_id: int):
     raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
 
-@app.post("/tasks", status_code=201)
+@app.post("/tasks", status_code=201, tags=["Tasks"])
 def create_task(payload: TaskCreate):
     """Create a new task. The body must contain a non-empty title."""
     global next_id
@@ -73,7 +79,7 @@ def create_task(payload: TaskCreate):
     return task
 
 
-@app.put("/tasks/{task_id}")
+@app.put("/tasks/{task_id}", tags=["Tasks"])
 def update_task(task_id: int, payload: TaskUpdate):
     """Update a task's title and/or done. Empty body or unknown id returns 400/404."""
     for index, task in enumerate(tasks):
@@ -90,7 +96,7 @@ def update_task(task_id: int, payload: TaskUpdate):
     raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
 
-@app.delete("/tasks/{task_id}", status_code=204)
+@app.delete("/tasks/{task_id}", status_code=204, tags=["Tasks"])
 def delete_task(task_id: int):
     """Delete a task. Returns 204 with an empty body, or 404 if the id does not exist."""
     for index, task in enumerate(tasks):
