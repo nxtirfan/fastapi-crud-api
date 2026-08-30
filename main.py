@@ -1,4 +1,7 @@
-﻿from fastapi import FastAPI, HTTPException, Query, Request
+﻿import sqlite3
+from contextlib import closing
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -6,9 +9,9 @@ from pydantic import BaseModel
 app = FastAPI(
     title="Task API",
     description="A small CRUD API that manages a to-do list. "
-    "All data lives in memory only - the list is reset to the "
-    "3 seed tasks every time the server restarts.",
-    version="1.0",
+    "Tasks are stored in a SQLite database (tasks.db), so data "
+    "survives server restarts.",
+    version="2.0",
 )
 
 
@@ -27,6 +30,47 @@ SEED_TASKS = [
     {"id": 2, "title": "Build a CRUD API", "done": False},
     {"id": 3, "title": "Write API documentation", "done": True},
 ]
+
+DB_PATH = "tasks.db"
+
+
+def get_connection() -> sqlite3.Connection:
+    """Open a connection to tasks.db with sensible defaults.
+
+    Row factory gives dict-like rows; foreign keys are on for good habit.
+    """
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+
+def init_db() -> None:
+    """Create the tasks table if missing and seed 3 example tasks only when empty.
+
+    The seed runs inside a transaction so it is all-or-nothing.
+    """
+    with closing(get_connection()) as connection:
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY,
+                title TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        (count,) = connection.execute("SELECT COUNT(*) FROM tasks").fetchone()
+        if count == 0:
+            with connection:
+                connection.executemany(
+                    "INSERT INTO tasks (title, done) VALUES (?, ?)",
+                    [(task["title"], int(task["done"])) for task in SEED_TASKS],
+                )
+
+
+init_db()
+
 
 tasks: list[dict] = [dict(task) for task in SEED_TASKS]
 next_id = 4
