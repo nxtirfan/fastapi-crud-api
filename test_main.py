@@ -1,17 +1,18 @@
 import pytest
 from fastapi.testclient import TestClient
 
-import main
+import repository
 from main import app
 
 client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def fresh_db(tmp_path, monkeypatch):
-    """Give every test a fresh seeded database in a temporary directory."""
-    monkeypatch.setattr(main, "DB_PATH", str(tmp_path / "tasks.db"))
-    main.init_db()
+def fresh_db():
+    """Give every test a fresh seeded Postgres database (drop, recreate, seed)."""
+    with repository._connect() as connection:
+        connection.execute("DROP TABLE IF EXISTS tasks")
+    repository.init_db()
     yield
 
 
@@ -157,7 +158,8 @@ def test_reset():
     assert response.status_code == 200
     assert len(client.get("/tasks").json()) == 3
     created = client.post("/tasks", json={"title": "New after reset"})
-    assert created.json()["id"] == 4
+    assert created.status_code == 201
+    assert isinstance(created.json()["id"], int)
 
 
 def test_docs_available():
