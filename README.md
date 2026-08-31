@@ -1,45 +1,73 @@
 # Task API — Build Your First CRUD API (W2 · A1)
 
-Task API — a small CRUD API that manages a to-do list, built with **Python 3 + FastAPI**. Tasks are stored in a **SQLite database** (`tasks.db`, a single file): data survives server restarts.
+Task API — a small CRUD API that manages a to-do list, built with **Python 3 + FastAPI**. Tasks are stored in **PostgreSQL, running as a Docker container**: the whole stack (app + database) starts with one command, `docker compose up`.
 
-Built stage by stage (Stage 0 → Stage 7), one honest Git commit per stage. In Week 3 (W3 · A2), the in-memory storage was replaced with SQLite — same endpoints, same request/response shapes, only the storage layer changed.
+Built stage by stage, one honest Git commit per stage. Storage has been swapped three times in this repo, and the API never changed:
 
-## Why SQLite
+| Version | Where tasks live | What runs it |
+|---|---|---|
+| A1 (Week 2) | a list in memory | the Python process |
+| A2 (Week 3) | `tasks.db`, a single file | SQLite on disk |
+| A3 (Week 3, current) | rows in Postgres | a Docker container — a real database server |
 
-- **Single file, zero setup.** The whole database is one file (`tasks.db`) — no database server to install or run. It is created automatically the first time the app starts.
-- **Built into Python.** `sqlite3` ships with the standard library — nothing to `pip install`.
-- **Survives restarts.** Unlike the Week 2 in-memory version, tasks live on disk: create a task, restart the server, it is still there.
-- **The API did not change.** Clients send the same requests to the same endpoints and get the same responses. That separation — the API is the promise, the database is where the promise is kept — is the whole point of this assignment.
-
-## Tech
-
-- Python 3.10+ (tested on 3.14)
-- FastAPI + Uvicorn
-- `sqlite3` (standard library) — parameterized queries throughout, no user input glued into SQL strings
-- pytest (24 automated tests, all passing — the same tests as the in-memory version, now green against SQLite)
-- [DB Browser for SQLite](https://sqlitebrowser.org/) for inspecting the database by hand
-
-## Install & Run (one command each)
+## One command runs everything
 
 ```bash
-# 1. Install dependencies (FastAPI/Uvicorn/pytest — sqlite3 needs no install)
-pip install -r requirements.txt
+cp .env.example .env       # set DATABASE_URL (host:port come from compose)
+docker compose up         # app + Postgres, together
+```
 
-# 2. Start the server on http://localhost:8000
+That's it: `docker compose up` builds the app image, starts Postgres 17 with a named volume (`taskdata`), waits until the database passes its healthcheck, then starts the API on **http://localhost:8000**. The `tasks` table and 3 seed rows are created automatically on first run (seed only when the table is empty — restarts never duplicate them).
+
+- Swagger UI: http://localhost:8000/docs
+- Stop everything: `docker compose down` (data survives — it lives in the volume, not the container)
+
+### Running without Docker (local dev)
+
+```bash
+pip install -r requirements.txt
 python -m uvicorn main:app --port 8000
 ```
 
-The first run creates `tasks.db` in the repo folder, the `tasks` table, and seeds 3 example tasks — only if the table is empty (restarting never duplicates the seed).
+This expects a Postgres reachable at `DATABASE_URL` from `.env` (e.g. the standalone container from Stage 0: `docker run --name taskdb -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=tasks -p 5432:5432 -v taskdata:/var/lib/postgresql/data -d postgres:17`).
 
-Run the test suite (optional):
+### Configuration
 
-```bash
-python -m pytest test_main.py -v
+All config comes from the environment — nothing is hardcoded. Copy `.env.example` to `.env` and adjust:
+
+```
+DATABASE_URL=postgres://postgres:dev@localhost:5432/tasks
 ```
 
-## Where the database lives
+Inside the compose network the app reaches the database by **service name** (`db`), not `localhost` — compose sets `DATABASE_URL` itself for the container; your `.env` matters only for running the app outside Docker. `.env` is git-ignored; `.env.example` is committed, so no real credentials ever enter git history.
 
-`tasks.db`, in the project root, created automatically on first run. It is **git-ignored**, so a fresh clone starts with an empty database and seeds its own 3 tasks on first start — no manual setup for anyone cloning this repo.
+## Tech
+
+- Python 3.10+ (tested on 3.14), FastAPI + Uvicorn
+- `psycopg` 3 (Postgres driver) — every query parameterized (`%s` placeholders); user input is never glued into SQL strings
+- PostgreSQL 17 (official Docker image) with a named volume for persistence
+- Docker + Docker Compose — `Dockerfile` (app image) + `compose.yaml` (app + db, one command)
+- pytest (24 automated tests, all passing — the same suite that passed against memory (A1) and SQLite (A2))
+
+## Architecture — the repository pattern
+
+```
+routes (main.py)  ->  repository (repository.py)  ->  Postgres (container)
+```
+
+`main.py` contains only routes, validation, and status codes. **Every line that talks to the database lives in `repository.py`** — the one-module rule from the assignment. Proof it held: moving SQLite → Postgres touched `repository.py` (rewrite) and `main.py` (import + call sites only, no route logic), and the same 24 tests kept passing. Storage is an implementation detail behind the API — that is the whole point of this repo's three storage swaps.
+
+### Database schema
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    done BOOLEAN NOT NULL DEFAULT FALSE
+);
+```
+
+Postgres hands out ids (`SERIAL`); `done` is a real boolean end-to-end — no 0/1 conversion at the boundary this time.
 
 ## Endpoints
 
@@ -52,7 +80,7 @@ python -m pytest test_main.py -v
 | POST | `/tasks` | Create a task (`{"title": "..."}`) | 201 | 400 |
 | PUT | `/tasks/{id}` | Update title and/or done (partial update) | 200 | 400, 404 |
 | DELETE | `/tasks/{id}` | Remove a task | 204 (empty body) | 404 |
-| GET | `/stats` | `{total, done, open}` — computed with `SELECT COUNT(*), SUM(done)` | 200 | — |
+| GET | `/stats` | `{total, done, open}` — computed with Postgres aggregates | 200 | — |
 | POST | `/reset` | Restore the 3 seed tasks | 200 | — |
 
 Every error is JSON with an `error` key, e.g. `{"error": "Task 99 not found"}`.
@@ -62,18 +90,6 @@ Every error is JSON with an `error` key, e.g. `{"error": "Task 99 not found"}`.
 ```json
 { "id": 1, "title": "Learn Python basics", "done": false }
 ```
-
-### Database schema
-
-```sql
-CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL,
-    done INTEGER NOT NULL DEFAULT 0
-);
-```
-
-`done` is stored as SQLite's `0`/`1` and converted to a JSON boolean at the API boundary. The database hands out ids — the app never counts them itself.
 
 ## The full CRUD cycle, via `curl -i`
 
@@ -131,90 +147,74 @@ HTTP/1.1 404 Not Found
 
 The same full cycle also works via Swagger UI at `/docs` → [screenshot](docs/swagger-ui.png).
 
-## Persistence — the point of this week
+## Persistence — proven across a full stack restart
 
-I created a task ("Buy milk", id 4), confirmed `GET /tasks` showed 4 tasks, **restarted the server**, and got `GET /tasks` again: **4 tasks — "Buy milk" was still there.** Last week the same experiment ended with the task gone, because it lived only in a Python list inside the server process. This week it lives in `tasks.db` on disk, and the server's death doesn't touch it.
+I created a task ("Survives compose down", id 4), then ran `docker compose down` — **both containers destroyed** — and `docker compose up` again. `GET /tasks` returned 4 tasks, including "Survives compose down". The rows live in the `taskdata` volume, outside the containers, so the database dying costs nothing.
 
-The seed guard matters too: the 3 example tasks are inserted only when `SELECT COUNT(*) FROM tasks` returns 0 — restart three times, still exactly 3 seed tasks, never 6, never 9.
+The same holds for the app alone: restart only the `api` container, the rows are still there — the database is a separate program now; the app's death never touches the data.
 
-## Opening the database by hand (Stage 4)
+The seed guard carried over from A2: 3 example tasks inserted only when `SELECT COUNT(*)` returns 0 — restart the stack three times, still 3 seed rows.
 
-`tasks.db` opened in DB Browser for SQLite — the same rows the API serves, laid out like a spreadsheet → [screenshot](docs/db-browser.png).
+## The data, seen from inside the database
 
-One query I ran by hand in the "Execute SQL" tab and what it returned:
+`psql` inside the db container (`docker exec <db-container> psql -U postgres -d tasks`) — `\dt` and a `SELECT`, the same rows the API serves → [screenshot](docs/db-postgres.png).
+
+One query I ran by hand and what it returned:
 
 ```sql
-SELECT * FROM tasks WHERE done = 1;
--- returned: (3, 'Write API documentation', 1) — the single completed seed task
+SELECT * FROM tasks WHERE done;
+-- id 3 | 'Write API documentation' | t   — the single completed seed task
 ```
-
-I also ran `UPDATE tasks SET done = 1;` and `DELETE FROM tasks WHERE done = 1;` directly in the viewer — and `GET /tasks` from the API reflected those changes **immediately, with no server restart**. There is no "syncing": the API and the database viewer read the exact same file. One source of truth.
 
 ## Extras
 
-### Filtering, search & pagination — now in SQL
+### Filtering, search & pagination — in SQL, evaluated by Postgres
 
 ```
-GET /tasks?done=true        → WHERE done = 1
-GET /tasks?search=milk     → WHERE title LIKE '%milk%' (case-insensitive)
+GET /tasks?done=true         → WHERE done = TRUE
+GET /tasks?search=milk      → WHERE title ILIKE '%milk%' (case-insensitive)
 GET /tasks?limit=2&offset=2 → LIMIT 2 OFFSET 2
 ```
 
-**What changed this week:** the filter moved from a Python loop over a list to SQL clauses the database evaluates itself — the same behaviour, but the work happens where the data lives. On a million-row table that difference stops being a detail.
+`ILIKE` is Postgres' case-insensitive LIKE — it preserves the A1/A2 search behaviour, which SQLite gave for free.
 
 ### Stats & reset
 
 ```
 > curl http://localhost:8000/stats
-{"total":3,"done":1,"open":2}        -- SELECT COUNT(*), SUM(done) FROM tasks
+{"total":3,"done":1,"open":2}        -- SELECT COUNT(*), SUM(done::int) FROM tasks
 
 > curl -X POST http://localhost:8000/reset
 {"message":"Reset to seed tasks","count":3}
 ```
 
-### The old mortality experiment (Week 2)
+## AI vs Me (bonus rounds)
 
-For contrast: in the in-memory version I created a task, restarted the server, and it was gone — the seed ran again and the list reset to 3. That was the limitation this assignment fixes.
-
-## AI vs Me (W3 bonus — the rematch)
-
-The full story — my self-written migration prompt, what the AI got right, what it silently decided, what my prompt forgot to specify, and the rematch round — is in **[ai-version/README.md](ai-version/README.md)**. My hand-built code in `main.py` stays untouched; the AI's Week 3 output lives quarantined in `ai-version/` (which also still contains the Week 2 round).
+The full stories — my self-written prompts, what the AI got right, what it silently decided, what my prompts forgot to specify, and the rematch rounds — live in **[ai-version/README.md](ai-version/README.md)**. Hand-built code stays in the repo root; AI output is quarantined in `ai-version/`.
 
 ## Repo layout
 
 ```
-├── main.py           # the API — hand-built, now backed by SQLite
+├── main.py           # routes only — no database line in here
+├── repository.py     # ALL database access (psycopg, parameterized queries)
 ├── test_main.py      # 24 pytest tests covering the whole CRUD cycle
 ├── requirements.txt  # pip install -r requirements.txt
-├── docs/
-│   ├── swagger-ui.png # Swagger UI screenshot
-│   └── db-browser.png # DB Browser for SQLite screenshot (Stage 4)
-└── ai-version/        # bonus — AI code in quarantine (W2 + W3 rounds)
-    ├── main.py        # W2 Round 1 (with the bugs my prompt failed to prevent)
-    ├── main_v2.py     # W2 Round 2 (after improving the prompt)
-    ├── main_db.py     # W3 — AI's SQLite migration, Round 1
-    ├── main_db_v2.py  # W3 — rematch round
-    └── README.md      # the full "AI vs me" story (W2 + W3)
+├── Dockerfile        # app image (python:3.14-slim + uvicorn)
+├── compose.yaml      # app + db (postgres:17, volume, healthcheck)
+├── .env.example      # committed config template (.env itself is git-ignored)
+├── docs/             # screenshots
+└── ai-version/       # bonus — AI code in quarantine (W2 + W3 rounds)
 ```
 
 ## Git history = one commit per stage
 
-Week 2 (in-memory version):
+Week 2 (in-memory):
 
 ```
-Stage 0: hello server
-Stage 1: root and health endpoints
-Stage 2: read endpoints with 404
-Stage 3: create with validation
-Stage 4: full CRUD
-Stage 5: Swagger UI
-Stage 6: publish and docs
-Extras: filtering, search, pagination, stats, reset
-Tests: automated test suite
-Stage 7: AI vs me
+Stage 0: hello server ... Stage 7: AI vs me   (10 commits, one per stage)
 ```
 
-Week 3 (SQLite migration):
+Week 3 · A2 (SQLite migration):
 
 ```
 Stage 0: create SQLite database
@@ -227,6 +227,19 @@ Stage 5: database documentation
 Stage 6: AI vs me (AI rematch)
 ```
 
+Week 3 · A3 (containerized Postgres):
+
+```
+Stage 0: Postgres in Docker + gitignore
+Stage 1: connect via .env and create table
+Stage 2: read from Postgres
+Stage 3: full CRUD on Postgres
+Tests: adapt test suite to Postgres storage
+Stage 4: docker-compose the whole stack
+Stage 5: one-command stack + docs
+Stage 6: AI vs me (AI rematch)
+```
+
 ## The idea worth keeping
 
-APIs describe what an application does. Databases describe where it stores its data. Swapping the storage did not break a single client — the same 24 tests that passed against the in-memory version pass unchanged against SQLite. Identical tests passing against a different storage is the proof that storage is just an implementation detail behind the API. Once that lands, moving to PostgreSQL or MySQL later is the same move again, wearing more clothes.
+APIs describe what an application does. Databases describe where it stores its data. This repo is that sentence, proven three times: the same 24 tests passed against a Python list, against a SQLite file, and against a containerized Postgres server. Storage is an implementation detail — and once the app and its database both run in containers, "it works on my machine" quietly becomes "it works on every machine."
