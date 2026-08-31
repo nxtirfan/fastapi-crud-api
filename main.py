@@ -5,6 +5,8 @@ from pydantic import BaseModel
 
 import repository
 
+repository.init_db()
+
 app = FastAPI(
     title="Task API",
     description="A small CRUD API that manages a to-do list. "
