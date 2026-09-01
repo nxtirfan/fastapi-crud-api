@@ -2,12 +2,14 @@
 
 What it does (one sentence):  Enriches a book record from the Week 5 scraper with a genre category, a one-sentence summary, and quality flags — so the scraped catalogue becomes sortable, filterable data.
 
-Input:                        { "title": "string", "description": "string, 0-6000 characters" }
+Input:                        { "title": "string, 1-300 characters",
+                                  "description": "string, 0-6000 characters",
+                                  "price_gbp": "number >= 0" }
                               (records from polite-book-scraper output/books.json)
 
 Output:                       { "category": one of [fiction|poetry|nonfiction|children|academic|other],
                                   "summary": "one sentence, max 220 characters",
-                                  "quality_flags": list of 0-3 items from
+                                  "quality_flags": 1-3 items from
                                        [missing_description|duplicate_description|short_description|suspicious_price|no_flags],
                                   "confidence": 0.0-1.0 }
 

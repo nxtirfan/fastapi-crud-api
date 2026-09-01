@@ -1,9 +1,13 @@
-﻿from fastapi import FastAPI, HTTPException, Query, Request
+﻿import os
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import repository
+from src.llm import service
+from src.llm.schema import Enrichment
 
 repository.init_db()
 
@@ -24,7 +28,15 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=400, content={"error": "Invalid request body"})
+    """400 (not 422) with the offending field named - before any model call."""
+    fields = ", ".join(
+        f"'{error['loc'][1]}'"
+        for error in exc.errors()
+        if len(error.get("loc", [])) > 1
+    )
+    if not fields:
+        fields = "body"
+    return JSONResponse(status_code=400, content={"error": f"Invalid or missing field: {fields}"})
 
 
 class TaskCreate(BaseModel):
@@ -35,6 +47,13 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     title: str | None = None
     done: bool | None = None
+
+
+class BookRecord(BaseModel):
+    """One record from the Week 5 scraper - the input of /enrich."""
+    title: str
+    description: str = ""
+    price_gbp: float = 0.0
 
 
 @app.get("/", tags=["General"])
@@ -113,3 +132,23 @@ def delete_task(task_id: int):
     """Delete a task. Returns 204 with an empty body, or 404 if the id does not exist."""
     if not repository.delete_task(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+
+
+@app.post("/enrich", response_model=Enrichment, tags=["Enrich (LLM)"])
+def enrich_book(record: BookRecord):
+    """Enrich one scraped book record: category (closed list), one-sentence
+    summary, quality flags, confidence. LLM_STUB=1 answers without a model call.
+    """
+    if not record.title.strip():
+        raise HTTPException(status_code=400, detail="Field 'title' must not be empty")
+    if len(record.title) > 300:
+        raise HTTPException(status_code=400, detail="Field 'title' exceeds 300 characters")
+    if len(record.description) > 6000:
+        raise HTTPException(status_code=400, detail="Field 'description' exceeds 6000 characters")
+    if record.price_gbp < 0:
+        raise HTTPException(status_code=400, detail="Field 'price_gbp' must be >= 0")
+
+    if os.environ.get("LLM_STUB") == "1":
+        return service.stub_enrichment()
+
+    return service.stub_enrichment()  # Stage 2 replaces this with the real call
