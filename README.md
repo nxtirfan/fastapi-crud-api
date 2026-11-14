@@ -2,7 +2,7 @@
 
 Task API — a small CRUD API that manages a to-do list, built with **Python 3 + FastAPI**. Tasks are stored in **PostgreSQL, running as a Docker container**: the whole stack (app + database) starts with one command, `docker compose up`.
 
-As of W7 it also carries one LLM endpoint, **`POST /enrich`**: it takes a messy book record (from the Week 5 scraper) and returns clean, schema-validated JSON — a category, a one-sentence summary, quality flags, and a confidence — with a real timeout, a repair retry, a cost log and a kill switch. Details in [JOB-CARD.md](JOB-CARD.md) and the "Enrich" section below.
+As of W7 it also carries one LLM endpoint, **`POST /enrich`**: it takes a messy book record (from the Week 5 scraper) and returns a category, a one-sentence summary, quality flags, and a confidence. It is being built stage by stage — the model output validation, timeout/retry policy, cost log and kill switch land in Stages 3–4. Details in [JOB-CARD.md](JOB-CARD.md) and the "Enrich" section below.
 
 Built stage by stage, one honest Git commit per stage. Storage has been swapped three times in this repo, and the API never changed:
 
@@ -84,13 +84,23 @@ Postgres hands out ids (`SERIAL`); `done` is a real boolean end-to-end — no 0/
 | DELETE | `/tasks/{id}` | Remove a task | 204 (empty body) | 404 |
 | GET | `/stats` | `{total, done, open}` — computed with Postgres aggregates | 200 | — |
 | POST | `/reset` | Restore the 3 seed tasks | 200 | — |
-| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400, 422, 504, 503 |
+| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400 |
 
 Every error is JSON with an `error` key, e.g. `{"error": "Task 99 not found"}`.
 
 ### The LLM endpoint — `POST /enrich` (W7 · A17)
 
-Input: one record as scraped in Week 5. Output: the same four fields every time — category from a closed list of six, a one-sentence summary, 1–3 quality flags, and a confidence. The model's answer is parsed, validated against a Pydantic schema, repaired once if broken, and quarantined with a 422 if still broken. Raw model text is never returned.
+Input: one record as scraped in Week 5. Output: four fields every time — category from a closed list of six, a one-sentence summary, 1–3 quality flags, and a confidence.
+
+**Stage 2 status:** with `LLM_STUB` unset the endpoint makes a real call and returns the model's answer as raw text (fastapi-crud-api wraps it as a JSON string — Stage 3 replaces this with parsed, schema-validated JSON). Verified live on three real records on 2026-11-15, prompt `enrich-v1`, model `openrouter/free`, temperature 0.2:
+
+| Record | Model answer (category · confidence) | Notes |
+|---|---|---|
+| "Sapiens" | nonfiction · 0.95 | clean JSON |
+| "The Bear and the Piano" | fiction · 0.92 | wrapped in a code fence; human label is `children` — first category miss |
+| "A Light in the Attic" | poetry · 0.9 | HTTP 200 in 11.4 s |
+
+What surprised me, noted for the later stages: the same request shape sometimes came back wrapped in a code fence, one children's book got labelled fiction, and one call took over 11 s — exactly the three problems Stage 3 (parse + repair + quarantine) and Stage 4 (timeout) exist for.
 
 Two curls to test it in five seconds (server running, `LLM_STUB=1` costs nothing):
 

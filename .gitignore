@@ -6,3 +6,4 @@ venv/
 .env
 tasks.db
 logs/
+desktop.ini
