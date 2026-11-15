@@ -375,6 +375,113 @@ the difference between hoping the AI includes them and knowing it will —
 in the regenerated version both blocks appear, the stack survives `down`
 + `up` with data intact, and the app starts first try.
 
+# Round 3 — Week 7: the LLM endpoint rematch
+
+The hardest one to delegate: an LLM integration where most of the
+difficult decisions are judgment calls (what counts as a failure, what
+gets retried, what a "complete" prompt looks like). My spec — written
+from memory before looking at anything, full text in
+[SPEC-round1.md](SPEC-round1.md) — covered the input/output contracts,
+the versioned prompt file, parse → validate → repair-once → quarantine,
+the explicit reliability policy (30s timeout, SDK retries off, retry
+only timeout/429/5xx, 1/2/4s backoff with jitter, honour Retry-After,
+fail fast on 401), the per-attempt cost log, the stub mode and the
+kill switch. One page, no reference to the brief.
+
+## What happened (quarantine results)
+
+- **The router served three different models for the same prompt.**
+  `LLM_MODEL=openrouter/free` rotates free models, and generation quality
+  swung wildly: attempt 1 (unknown model, 32k output tokens) produced a
+  complete, genuinely good 9-file build; attempt 2 returned a weaker
+  model — prose glued to file markers ("Now schema.py.FILE:
+  src/llm/schema.py"), pydantic-v1 imports on a pydantic-2 install, a
+  `read_text(encoding="utf-,8")` typo; attempt 3
+  (`nvidia/nemotron-3.5-super-vl:free`) was clean and complete. The
+  same prompt, three different codebases. My build is reproducible;
+  this is not.
+- **The good build survived my checkpoints.** Stub mode 200/400 (the
+  400 names `title`), kill switch 503 in 0.2s with zero model calls,
+  real calls 200 with correct per-attempt cost-log lines
+  (`event: llm_attempt`, tokens, duration), schema-shaped JSON only.
+  It dodged all three classic traps (default timeout, raw model text
+  to the caller, retrying on 401) — because my spec named them.
+- **The eval says the quiet part: 6/8, identical to mine — with the
+  same two failures.** Libertarianism for Beginners → nonfiction (my
+  label may be the wrong one) and Penny Maybe → guessed a real
+  category (`fiction`) instead of the when-unsure fallback. Its
+  prompt v1 and mine instruct the fallback the same soft way, and
+  both models ignored it. When two independent prompt writers and
+  two different models fail the same way, the failure is in the
+  instruction style, not the luck.
+
+## Three concrete differences (ai1/ vs my src/llm/)
+
+### 1. What the AI did better
+
+It shipped a **full repair conversation** in one pass: on a rejected
+answer it replays system + user + the rejected assistant message +
+the correction request — a genuinely better repair transcript than my
+"same prompt, plus error, plus text" concatenation. It also picked
+AsyncOpenAI + `async def` end to end, which is the shape FastAPI is
+built for (I run sync OpenAI in threadpool workers — valid, less
+idiomatic). Honest credit where due.
+
+### 2. What the AI got wrong / quietly ignored
+
+It re-implemented Pydantic by hand: ~20 lines of `isinstance` checks
+in the route for what one `BookRecord(BaseModel)` parameter does
+declaratively — validation drifts away from the schema file and the
+route grows every time a rule changes. It also mapped *all*
+non-listed exceptions to 502 with no catch-all handler in `main.py`,
+so an unexpected error returns a raw traceback-shaped 500. And when
+it chose only 3 explicit retry classes instead of my three exception
+types, the distinction between "provider misconfigured" (502) and
+"provider down after retries" (504) survived only as an integer.
+
+### 3. What my prompt forgot to specify — and the AI decided for me
+
+I never pinned the attempt count (it chose 4; I use 3), never said
+whether connection errors (non-timeout) are retryable (it chose no;
+I agree but never wrote it), and never fixed the 400-body wording
+(its error bodies are bare field names: `{"error": "title"}`). Small,
+but they become the public face of the endpoint.
+
+## Rematch — the improved spec (W7, Round 2)
+
+> (Fixed from Round 1's shared finding: the when-unsure rule that
+> both prompt writers wrote softly and both models ignored.)
+>
+> [SPEC-round2.md](SPEC-round2.md) changes one section: the
+> when-unsure rule must be imperative — "if the description does not
+> EXPLICITLY name the audience or the literary form, you MUST choose
+> `other` with confidence <= 0.5" — plus a required ambiguous-record
+> example anchored in the prompt.
+
+**Result: 4/8.** The fix overshot. Penny Maybe now correctly returns
+`other` at confidence 0.4 — but four clear cases (Sapiens, Scott
+Pilgrim, #HigherSelfie, Libertarianism) collapsed to `other` too.
+Round 2's model (`nemotron-3-ultra-550b:free`, 4.4k output tokens —
+a third of round 1's) also silently skipped the python-dotenv wiring
+my spec required, and answered every request with
+`LLM_MODEL not configured` until I passed the env vars explicitly.
+
+The calibration lesson, worth more than either score: soft language
+under-fires (6/8, ambiguous case wrong) and hard language over-fires
+(4/8, four clear cases thrown away). The rule needs a middle clause —
+strong topical cues ("a history of humankind", "graphic novel") count
+as explicit evidence — which is exactly what prompt v2 should test.
+
+## Conclusion
+
+Same verdict as the first two rounds, sharper this time: an AI can
+reproduce my architecture in one pass when the spec pins the
+contracts, but the judgment calls I didn't write down became its
+choices, its prompt had the same calibration blind spot mine did,
+and a rotating free-model router can't produce a reproducible build.
+I could only see any of this because I ran both versions through the
+same 8 labelled cases.
+
 ## Conclusion
 
 An AI's output is exactly as good as its specification — and I could only

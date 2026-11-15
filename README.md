@@ -151,7 +151,7 @@ The structured log line from a real call (2026-11-15, `openrouter/free`):
 
 ### What I'd fix with another day
 
-1. Prompt v2 that actually triggers the when-unsure rule (the Penny Maybe case), then re-run the eval to see whether 6/8 moves.
+1. Calibrate the when-unsure rule, not just harden it — the evidence is already in hand: the AI rematch's imperative version of the rule fixed the ambiguous case but collapsed four clear cases to `other` (4/8; see [ai-version/README.md](ai-version/README.md)). Prompt v2 should add the middle clause: strong topical cues count as explicit evidence.
 2. Decide honestly whether `academic` is earning its place in the closed list — the eval suggests the model will almost never pick it.
 3. A cache keyed on input + prompt version: re-running enrichment over the same 60 scraped records burns the daily 50-call allowance for nothing.
 
@@ -260,7 +260,7 @@ GET /tasks?limit=2&offset=2 → LIMIT 2 OFFSET 2
 
 ## AI vs Me (bonus rounds)
 
-The full stories — my self-written prompts, what the AI got right, what it silently decided, what my prompts forgot to specify, and the rematch rounds — live in **[ai-version/README.md](ai-version/README.md)**. Hand-built code stays in the repo root; AI output is quarantined in `ai-version/`.
+The full stories — my self-written prompts, what the AI got right, what it silently decided, what my prompts forgot to specify, and the rematch rounds (W2, W3, W7) — live in **[ai-version/README.md](ai-version/README.md)**. Hand-built code stays in the repo root; AI output is quarantined in `ai-version/`. The W7 round produced the sharpest finding: the AI's build scored the same 6/8 on the same eval with the same two failures, and the hardened prompt-v2 experiment scored 4/8 by fixing the ambiguous case but breaking four clear ones.
 
 ## Repo layout
 
