@@ -134,11 +134,12 @@ def delete_task(task_id: int):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
 
-@app.post("/enrich", tags=["Enrich (LLM)"])
+@app.post("/enrich", response_model=Enrichment, tags=["Enrich (LLM)"])
 def enrich_book(record: BookRecord):
     """Enrich one scraped book record: category (closed list), one-sentence
     summary, quality flags, confidence. LLM_STUB=1 answers without a model call.
-    Stage 2 returns the raw model text; Stage 3 parses and validates it.
+    The model's answer is parsed and schema-validated, repaired once if broken,
+    and quarantined with a 422 if it is still broken — raw text never leaves.
     """
     if not record.title.strip():
         raise HTTPException(status_code=400, detail="Field 'title' must not be empty")
@@ -152,5 +153,10 @@ def enrich_book(record: BookRecord):
     if os.environ.get("LLM_STUB") == "1":
         return service.stub_enrichment()
 
-    # Stage 2: real call - returns model text; Stage 3 validates it.
-    return service.call_model(record.model_dump())
+    try:
+        return service.enrich(record.model_dump())
+    except service.QuarantinedError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The model's answer could not be validated ({exc}) — its raw output was quarantined",
+        )

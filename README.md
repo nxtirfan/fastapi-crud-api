@@ -49,7 +49,7 @@ Inside the compose network the app reaches the database by **service name** (`db
 - `psycopg` 3 (Postgres driver) — every query parameterized (`%s` placeholders); user input is never glued into SQL strings
 - PostgreSQL 17 (official Docker image) with a named volume for persistence
 - Docker + Docker Compose — `Dockerfile` (app image) + `compose.yaml` (app + db, one command)
-- pytest (24 automated tests, all passing — the same suite that passed against memory (A1) and SQLite (A2))
+- pytest (34 automated tests, all passing — 24 covering the whole CRUD cycle since A1, 10 covering the LLM plumbing in `test_llm.py`)
 
 ## Architecture — the repository pattern
 
@@ -84,23 +84,17 @@ Postgres hands out ids (`SERIAL`); `done` is a real boolean end-to-end — no 0/
 | DELETE | `/tasks/{id}` | Remove a task | 204 (empty body) | 404 |
 | GET | `/stats` | `{total, done, open}` — computed with Postgres aggregates | 200 | — |
 | POST | `/reset` | Restore the 3 seed tasks | 200 | — |
-| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400 |
+| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400, 422 |
 
 Every error is JSON with an `error` key, e.g. `{"error": "Task 99 not found"}`.
 
 ### The LLM endpoint — `POST /enrich` (W7 · A17)
 
-Input: one record as scraped in Week 5. Output: four fields every time — category from a closed list of six, a one-sentence summary, 1–3 quality flags, and a confidence.
+Input: one record as scraped in Week 5. Output: the same four fields every time — category from a closed list of six, a one-sentence summary, 1–3 quality flags, and a confidence. The model's answer is parsed, validated against the Pydantic schema, repaired once if broken, and quarantined with a 422 if still broken. Raw model text is never returned.
 
-**Stage 2 status:** with `LLM_STUB` unset the endpoint makes a real call and returns the model's answer as raw text (fastapi-crud-api wraps it as a JSON string — Stage 3 replaces this with parsed, schema-validated JSON). Verified live on three real records on 2026-11-15, prompt `enrich-v1`, model `openrouter/free`, temperature 0.2:
+An answer that fails twice is appended to `logs/quarantine.jsonl` (input, error, prompt version, raw output) — the log exists precisely so the failure is inspectable, not swallowed.
 
-| Record | Model answer (category · confidence) | Notes |
-|---|---|---|
-| "Sapiens" | nonfiction · 0.95 | clean JSON |
-| "The Bear and the Piano" | fiction · 0.92 | wrapped in a code fence; human label is `children` — first category miss |
-| "A Light in the Attic" | poetry · 0.9 | HTTP 200 in 11.4 s |
-
-What surprised me, noted for the later stages: the same request shape sometimes came back wrapped in a code fence, one children's book got labelled fiction, and one call took over 11 s — exactly the three problems Stage 3 (parse + repair + quarantine) and Stage 4 (timeout) exist for.
+One honest note from testing the failure path live (2026-11-15, model routed to `baidu/ernie-5.5-flash-preview:free`): I temporarily poisoned the prompt twice — first with an instruction to use a category outside the list, then by rewriting the schema's enum line itself — and the model *refused both times*, returning the sensible `poetry` instead. So the live model never produced an invalid answer for me to quarantine. The 422 + quarantine path is therefore proven by unit tests in [test_llm.py](test_llm.py), where `call_model` is stubbed to return unrepairable garbage: exactly one repair retry fires, then the error surfaces as `422 {"error": ...}` and a line lands in `quarantine.jsonl`. That test also pins the other half of the contract: input validation rejects with 400 *before* any model call is made.
 
 Two curls to test it in five seconds (server running, `LLM_STUB=1` costs nothing):
 
