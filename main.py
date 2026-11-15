@@ -150,6 +150,10 @@ def enrich_book(record: BookRecord):
     if record.price_gbp < 0:
         raise HTTPException(status_code=400, detail="Field 'price_gbp' must be >= 0")
 
+    if os.environ.get("LLM_ENABLED", "true").lower() == "false":
+        # Kill switch: off without a deploy. Deterministic answer, zero model calls.
+        raise HTTPException(status_code=503, detail="LLM disabled by kill switch (LLM_ENABLED=false)")
+
     if os.environ.get("LLM_STUB") == "1":
         return service.stub_enrichment()
 
@@ -159,4 +163,14 @@ def enrich_book(record: BookRecord):
         raise HTTPException(
             status_code=422,
             detail=f"The model's answer could not be validated ({exc}) — its raw output was quarantined",
+        )
+    except service.ModelAuthError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Model provider rejected the call (bad key or bad request) — not retried: {exc}",
+        )
+    except service.ModelUnavailableError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Model provider unreachable (timeout/429/5xx after retries): {exc}",
         )

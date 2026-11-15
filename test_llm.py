@@ -114,3 +114,85 @@ def test_endpoint_rejects_bad_input_before_any_call(monkeypatch):
     assert res.status_code == 400
     assert "title" in res.json()["error"]
     assert calls == []  # rejected before the model
+
+
+# --- Stage 4: retry policy, timeout, kill switch ----------------------------
+
+def test_client_overrides_sdk_defaults(monkeypatch):
+    client = service._client()
+    assert client.timeout == service.CALL_TIMEOUT_SECONDS == 30.0
+    assert client.max_retries == 0  # SDK's silent retries are OFF
+
+
+def test_retries_on_timeout_then_succeeds(monkeypatch):
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
+    calls = []
+    outcomes = [service.Retriable(Exception("t1")), service.Retriable(Exception("t2"))]
+
+    def flaky(messages, attempt):
+        calls.append(attempt)
+        if outcomes:
+            raise outcomes.pop(0)
+        return "answer"
+
+    monkeypatch.setattr(service, "_create", flaky)
+    assert service._call_with_policy([{"role": "user", "content": "x"}]) == "answer"
+    assert calls == [1, 2, 3]  # two retries, no more than MAX_ATTEMPTS
+
+
+def test_does_not_retry_on_auth_error(monkeypatch):
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
+    calls = []
+
+    def bad_key(messages, attempt):
+        calls.append(attempt)
+        raise service.ModelAuthError("401: invalid api key")
+
+    monkeypatch.setattr(service, "_create", bad_key)
+    with pytest.raises(service.ModelAuthError):  # NOT ModelUnavailableError: auth is never retried
+        service._call_with_policy([{"role": "user", "content": "x"}])
+    assert calls == [1]  # one attempt, zero retries
+
+
+def test_retries_exhausted_becomes_unavailable(monkeypatch):
+    monkeypatch.setattr(service.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(service, "_create", lambda m, a: (_ for _ in ()).throw(service.Retriable(Exception("down"))))
+    with pytest.raises(service.ModelUnavailableError):
+        service._call_with_policy([{"role": "user", "content": "x"}])
+
+
+def test_backoff_honours_retry_after(monkeypatch):
+    assert service._backoff_seconds(1, retry_after=7.0) == 7.0
+    assert service._backoff_seconds(1, retry_after=99.0) == 15.0  # capped
+    plain = service._backoff_seconds(1, retry_after=None)
+    assert 1.0 <= plain <= 1.5  # 1s + jitter
+    third = service._backoff_seconds(3, retry_after=None)
+    assert 4.0 <= third <= 4.5
+
+
+def test_kill_switch_returns_503_with_zero_calls(monkeypatch):
+    monkeypatch.setenv("LLM_ENABLED", "false")
+    calls = []
+    monkeypatch.setattr(service, "enrich", lambda record: calls.append(1) or {})
+    res = _client().post("/enrich", json={"title": "A book"})
+    assert res.status_code == 503
+    assert "kill switch" in res.json()["error"]
+    assert calls == []  # zero model calls
+
+
+def test_endpoint_maps_auth_failure_to_502(monkeypatch):
+    def bad(record):
+        raise service.ModelAuthError("401")
+
+    monkeypatch.setattr(service, "enrich", bad)
+    res = _client().post("/enrich", json={"title": "A book"})
+    assert res.status_code == 502
+
+
+def test_endpoint_maps_unavailable_to_504(monkeypatch):
+    def down(record):
+        raise service.ModelUnavailableError("timeout after 3 attempts")
+
+    monkeypatch.setattr(service, "enrich", down)
+    res = _client().post("/enrich", json={"title": "A book"})
+    assert res.status_code == 504

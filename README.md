@@ -2,7 +2,7 @@
 
 Task API — a small CRUD API that manages a to-do list, built with **Python 3 + FastAPI**. Tasks are stored in **PostgreSQL, running as a Docker container**: the whole stack (app + database) starts with one command, `docker compose up`.
 
-As of W7 it also carries one LLM endpoint, **`POST /enrich`**: it takes a messy book record (from the Week 5 scraper) and returns a category, a one-sentence summary, quality flags, and a confidence. It is being built stage by stage — the model output validation, timeout/retry policy, cost log and kill switch land in Stages 3–4. Details in [JOB-CARD.md](JOB-CARD.md) and the "Enrich" section below.
+As of W7 it also carries one LLM endpoint, **`POST /enrich`**: it takes a messy book record (from the Week 5 scraper) and returns clean, schema-validated JSON — a category, a one-sentence summary, quality flags, and a confidence — with a real timeout, a retry policy, a cost log and a kill switch. Details in [JOB-CARD.md](JOB-CARD.md) and the "Enrich" section below.
 
 Built stage by stage, one honest Git commit per stage. Storage has been swapped three times in this repo, and the API never changed:
 
@@ -49,7 +49,7 @@ Inside the compose network the app reaches the database by **service name** (`db
 - `psycopg` 3 (Postgres driver) — every query parameterized (`%s` placeholders); user input is never glued into SQL strings
 - PostgreSQL 17 (official Docker image) with a named volume for persistence
 - Docker + Docker Compose — `Dockerfile` (app image) + `compose.yaml` (app + db, one command)
-- pytest (34 automated tests, all passing — 24 covering the whole CRUD cycle since A1, 10 covering the LLM plumbing in `test_llm.py`)
+- pytest (42 automated tests, all passing — 24 covering the whole CRUD cycle since A1, 18 covering the LLM plumbing: parse, repair-once, quarantine, retry policy, kill switch)
 
 ## Architecture — the repository pattern
 
@@ -84,13 +84,15 @@ Postgres hands out ids (`SERIAL`); `done` is a real boolean end-to-end — no 0/
 | DELETE | `/tasks/{id}` | Remove a task | 204 (empty body) | 404 |
 | GET | `/stats` | `{total, done, open}` — computed with Postgres aggregates | 200 | — |
 | POST | `/reset` | Restore the 3 seed tasks | 200 | — |
-| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400, 422 |
+| POST | `/enrich` | Enrich one scraped book record via an LLM (W7) | 200 | 400, 422, 502, 503, 504 |
 
 Every error is JSON with an `error` key, e.g. `{"error": "Task 99 not found"}`.
 
 ### The LLM endpoint — `POST /enrich` (W7 · A17)
 
 Input: one record as scraped in Week 5. Output: the same four fields every time — category from a closed list of six, a one-sentence summary, 1–3 quality flags, and a confidence. The model's answer is parsed, validated against the Pydantic schema, repaired once if broken, and quarantined with a 422 if still broken. Raw model text is never returned.
+
+**Reliability policy (Stage 4), all explicit, no SDK defaults left in place:** the client timeout is 30 s (the SDK would silently wait ten minutes), and the SDK's own two hidden retries are switched off (`max_retries=0`) — this module owns the retry policy instead. Retries fire **only** on timeouts, 429 and 5xx, with exponential backoff plus jitter (1s/2s/4s + up to 0.5s random), honouring `Retry-After` on a 429; a 400/401/403 is never retried and fails fast as `502`. Retries exhausted → `504`. Every attempt writes one structured JSON log line to stdout — `prompt_version`, `model`, `prompt_tokens`, `completion_tokens`, `duration_ms`, `attempt` — so cost is a `grep` away. `LLM_ENABLED=false` is the kill switch: the endpoint answers immediately with a deterministic `503` and no model call.
 
 An answer that fails twice is appended to `logs/quarantine.jsonl` (input, error, prompt version, raw output) — the log exists precisely so the failure is inspectable, not swallowed.
 
