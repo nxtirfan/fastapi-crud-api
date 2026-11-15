@@ -109,6 +109,52 @@ curl -X POST http://localhost:8000/enrich -H "Content-Type: application/json" -d
 → {"error":"Invalid or missing field: 'title'"}
 ```
 
+The same first curl with the real model (`LLM_STUB` unset), exact response captured 2026-11-15:
+
+```
+curl -X POST http://localhost:8010/enrich -H "Content-Type: application/json" ^
+  -d "{\"title\": \"A Light in the Attic\", \"description\": \"A collection of humorous poems and drawings by Shel Silverstein. First published in 1981, the book contains more than 100 poems and illustrations.\", \"price_gbp\": 51.77}"
+→ {"category":"poetry","summary":"A collection of humorous poems and drawings by Shel Silverstein, first published in 1981 with more than 100 poems and illustrations.","quality_flags":["no_flags"],"confidence":0.9}
+```
+
+### Provider and configuration
+
+Three environment variables decide everything about the model — the reason no provider should ever be hardcoded:
+
+```
+LLM_BASE_URL=https://openrouter.ai/api/v1   # OpenRouter (free lane; Ollama would be http://localhost:11434/v1/)
+LLM_API_KEY=<your key, in .env, never in git>
+LLM_MODEL=openrouter/free                    # a rotating router id — on 2026-11-15 it served baidu/ernie-5.5-flash-preview:free
+```
+
+Also honoured: `LLM_STUB=1` (no model call), `LLM_ENABLED=false` (kill switch → 503).
+
+### Eval result — 6/8 (75%), 2026-11-15, prompt `enrich-v1`
+
+Eight hand-labelled cases live in [evals/cases.json](evals/cases.json), run by `python evals/run_evals.py` against the live endpoint ([run_evals.py](evals/run_evals.py)). Six clear cases passed (Sapiens, Shakespeare's Sonnets, Aladdin, Scott Pilgrim, Mesaerion, #HigherSelfie). Two failed:
+
+- **Libertarianism for Beginners** — expected `academic`, got `nonfiction`. Half of this is my label: "for beginners" is intro nonfiction, and `academic` arguably over-reaches. The honest reading is that this case is mis-labelled rather than mis-answered.
+- **Penny Maybe** — the deliberate ambiguous case (vague title, 256-character description), expected to hit the when-unsure rule (`other`, confidence < 0.5). The model instead answered `children` confidently. This is the real miss: the when-unsure instruction was not followed, and it is the first thing prompt v2 should target.
+
+A number you can compare is worth more than a high number: the next prompt change gets judged against 6/8.
+
+### What one call cost
+
+The structured log line from a real call (2026-11-15, `openrouter/free`):
+
+```
+{"ts": "2026-11-15T11:01:48+00:00", "event": "call", "attempt": 1, "duration_ms": 14826,
+ "model": "openrouter/free", "prompt_version": "v1", "prompt_tokens": 837, "completion_tokens": 946}
+```
+
+1,783 tokens per call. On the free lane this costs $0.00 but is rate-capped at 50 calls/day (20/min). On a paid equivalent priced like gpt-4o-mini ($0.15/M input, $0.60/M output) that is ≈ $0.00069 per call, so **10,000 enrichments a day ≈ $7/day** — output tokens dominate (946 of 1,783), which is where a shorter enforced output would pay off.
+
+### What I'd fix with another day
+
+1. Prompt v2 that actually triggers the when-unsure rule (the Penny Maybe case), then re-run the eval to see whether 6/8 moves.
+2. Decide honestly whether `academic` is earning its place in the closed list — the eval suggests the model will almost never pick it.
+3. A cache keyed on input + prompt version: re-running enrichment over the same 60 scraped records burns the daily 50-call allowance for nothing.
+
 ### Task shape
 
 ```json
@@ -222,12 +268,16 @@ The full stories — my self-written prompts, what the AI got right, what it sil
 ├── main.py           # routes only — no database line in here
 ├── repository.py     # ALL database access (psycopg, parameterized queries)
 ├── test_main.py      # 24 pytest tests covering the whole CRUD cycle
+├── test_llm.py       # 18 pytest tests for the LLM plumbing (zero model calls)
+├── JOB-CARD.md       # W7 job card: input, output, closed lists, "must never" rules
+├── prompts/          # versioned prompt files (enrich-v1.md — the prompt is code)
+├── evals/            # 8 labelled cases + the eval runner
 ├── requirements.txt  # pip install -r requirements.txt
 ├── Dockerfile        # app image (python:3.14-slim + uvicorn)
 ├── compose.yaml      # app + db (postgres:17, volume, healthcheck)
 ├── .env.example      # committed config template (.env itself is git-ignored)
 ├── docs/             # screenshots
-└── ai-version/       # bonus — AI code in quarantine (W2 + W3 rounds)
+└── ai-version/       # bonus — AI code in quarantine (W2 + W3 + W7 rounds)
 ```
 
 ## Git history = one commit per stage
@@ -262,6 +312,18 @@ Tests: adapt test suite to Postgres storage
 Stage 4: docker-compose the whole stack
 Stage 5: one-command stack + docs
 Stage 6: AI vs me (AI rematch)
+```
+
+Week 7 · A17 "Put an LLM behind your API" (the portal lists this as Week 6, "Connect to an AI API"):
+
+```
+Stage 0: job card, provider working, key in .env
+Stage 1: endpoint, input validation, output schema, stub mode
+Stage 2: prompt v1 as a versioned file, wired to the endpoint
+Stage 3: parse, validate, repair once, quarantine on failure
+Stage 4: timeout, retry policy, cost logging, kill switch
+Stage 5: eval set, results, README, published
+Bonus: AI vs me
 ```
 
 ## The idea worth keeping
